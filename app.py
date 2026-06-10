@@ -1,37 +1,80 @@
 import streamlit as st
 import requests
+import re
 
-API_KEY = "sk-std-Y0bUYWPi-Iw0v_7kQ0jJc26FMndV86VCb7fGKAekg4k"
-URL = "https://server.iac.ac.il/api/v1/studentapi/chat/completions"
-headers = {"Authorization": f"Bearer {API_KEY}"}
-
-st.set_page_config(page_title="צ'אט AI", page_icon="💬")
-st.title("💬 צ'אט עם AI")
+st.set_page_config(page_title="הסוכן החכם של ליטל", page_icon="💻")
+st.markdown("<h1 style='text-align: center; color: #FF4B4B;'>💻 הסוכן החכם של ליטל</h1>", unsafe_allow_html=True)
+st.markdown("---")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = ""
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+for message in st.session_state.messages:
+    avatar_icon = "👤" if message["role"] == "user" else "🤖"
+    with st.chat_message(message["role"], avatar=avatar_icon):
+        st.markdown(message["content"])
+
+def scrub_sources(text):
+    if not text: return ""
+    text = re.sub(r'\(https?://\S+\)', '', text)
+    text = re.sub(r'\[.*?\]', '', text)
+    text = text.replace("()", "").replace("( )", "")
+    text = text.strip().lstrip(')').rstrip('(')
+    return text.strip()
 
 if st.button("נקה שיחה"):
     st.session_state.messages = []
+    st.session_state.chat_history = ""
     st.rerun()
 
-if user_input := st.chat_input("כתבי הודעה..."):
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
+if prompt := st.chat_input("קדימה! שאלי אותי כל דבר :)"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user", avatar="👤"):
+        st.markdown(prompt)
 
-    with st.chat_message("assistant"):
-        with st.spinner("חושב..."):
-            payload = {
-                "messages": st.session_state.messages,
-                "max_completion_tokens": 1000
-            }
+    with st.chat_message("assistant", avatar="🤖"):
+        message_placeholder = st.empty()
+        quota_placeholder = st.empty()
+        message_placeholder.markdown("🔎 מחפש תשובה...")
+
+        API_KEY = "YOUR_API_KEY_HERE"
+        URL = "https://server.iac.ac.il/api/v1/studentapi/responses"
+        headers = {"Authorization": f"Bearer {API_KEY}"}
+
+        full_input = f"{st.session_state.chat_history}\nUser: {prompt}"
+
+        payload = {
+            "model": "gpt-5-nano",
+            "instructions": "ענה בעברית קצרה. ענה רק על השאלה האחרונה. אל תציג מקורות, לינקים או סוגריים מיותרים.",
+            "input": full_input,
+            "tools": [{"type": "web_search"}],
+            "reasoning": {"effort": "low"}
+        }
+
+        try:
             response = requests.post(URL, json=payload, headers=headers)
-            answer = response.json()["choices"][0]["message"]["content"]
-        st.markdown(answer)
-
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+            if response.status_code == 200:
+                result = response.json()
+                output_list = result.get("output", [])
+                final_text = ""
+                for item in output_list:
+                    if isinstance(item, dict) and item.get("type") == "message":
+                        for content_block in item.get("content", []):
+                            if content_block.get("type") == "output_text":
+                                raw_text = content_block.get("text", "")
+                                final_text = scrub_sources(raw_text)
+                if final_text:
+                    message_placeholder.markdown(final_text)
+                    st.session_state.messages.append({"role": "assistant", "content": final_text})
+                    st.session_state.chat_history += f"\nUser: {prompt}\nAI: {final_text}"
+                    quota = result.get("iac_quota_status", {})
+                    used = quota.get("tokens_used_daily", "0")
+                    quota_placeholder.markdown(f"📊 <span style='color: #008000;'>טוקנים שנוצלו היום: {used}</span>", unsafe_allow_html=True)
+                else:
+                    message_placeholder.warning("לא נמצאה תשובה.")
+            else:
+                st.error(f"שגיאת שרת: {response.status_code}")
+        except Exception as e:
+            st.error(f"שגיאה: {e}")
